@@ -1,0 +1,24 @@
+[package]
+name = "hob"
+version = "0.1.0"
+edition = "2024"
+description = "A home backend: cameras (Frigate), photos (Immich), weather, indoor air and calendar behind one HTTP API and MCP, with any screen over it"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "webp"] }
+libc = "0.2"
+roxmltree = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+
+[profile.release]
+lto = "thin"
+strip = true

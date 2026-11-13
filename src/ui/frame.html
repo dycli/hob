@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame</title>
+<style>
+  /* A rail of tabs down the left, the chosen view beside it. Home on the
+     frame's side (portrait) has the photo above and the board below; on a
+     landscape screen the board sits beside the photo. --u is a hundredth of
+     the view's short side, so type scales with the screen. */
+  :root {
+    --ink: #2a2019; --dim: #6a5a4b; --faint: #93806b; --rule: #d2c2a8;
+    --paper: #e4d6bf; --lift: #ede2cf; --accent: #b0482a;
+    --rail: 12.5vmin;
+    --u: min((100vw - var(--rail)) / 100, 0.5625vh);
+  }
+  /* No pinch zoom, scrolling or text selection: the frame is touched, not read. */
+  html { touch-action: none; user-select: none; -webkit-user-select: none; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; cursor: none;
+    background: var(--paper); color: var(--ink);
+    font-family: system-ui, "Roboto", sans-serif;
+  }
+  body { display: grid; grid-template-columns: var(--rail) 1fr; }
+  /* Home's photo is square, the board takes the rest. */
+  #main { display: grid; grid-template-rows: calc(100vw - var(--rail)) 1fr; min-width: 0; min-height: 0; }
+  @media (orientation: landscape) {
+    #main { grid-template-rows: none; grid-template-columns: 100vh 1fr; }
+    :root { --u: min((100vw - var(--rail)) * 0.005625, 1vh); }
+  }
+  /* The other views have the space to themselves. */
+  body:not([data-view=home]) #main { grid-template: 1fr / 1fr; }
+  body:not([data-view=home]):not([data-view=photos]) #photo,
+  body:not([data-view=home]):not([data-view=calendar]) #board { display: none; }
+  body[data-view=calendar] { --u: min((100vw - var(--rail)) * 0.0075, 0.75vh); }
+  #cams, #settings, #wx { display: none; }
+  body[data-view=weather] #wx { display: flex; }
+  body[data-view=weather] { --u: min((100vw - var(--rail)) / 100, 1vh); }
+  body[data-view=cameras] #cams { display: grid; }
+  body[data-view=settings] #settings { display: block; }
+
+  #rail {
+    display: flex; flex-direction: column; align-items: stretch;
+    background: var(--lift); border-right: 1px solid var(--rule);
+    padding: 1.5vmin 0; gap: .6vmin; box-sizing: border-box; min-height: 0;
+  }
+  #rail button {
+    display: flex; flex-direction: column; align-items: center; gap: .7vmin;
+    font: inherit; font-size: 1.5vmin; font-weight: 600; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--dim); background: none; border: 0;
+    padding: 1.7vmin 0; margin: 0 1vmin; border-radius: 1.6vmin;
+    transition: background .25s, color .25s;
+  }
+  #rail button[hidden] { display: none; }
+  #rail svg {
+    width: 4vmin; height: 4vmin; fill: none; stroke: currentColor;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+  }
+  #rail button.on { background: var(--ink); color: var(--paper); }
+  #rail .time {
+    margin-top: auto; text-align: center; font-size: 2.6vmin; font-weight: 300;
+    color: var(--dim); font-variant-numeric: tabular-nums;
+  }
+  #rail .time small { display: block; font-size: 1.3vmin; letter-spacing: .12em; color: var(--faint); }
+  body[data-view=home] #rail .time { visibility: hidden; }
+
+  #photo { position: relative; overflow: hidden; background: var(--paper); }
+  #photo .slot { position: absolute; inset: 0; overflow: hidden; will-change: transform, opacity; }
+  #photo .slot:nth-child(1) { transform: translateX(-100%); }
+  #photo .slot:nth-child(3) { transform: translateX(100%); }
+  #photo canvas, #photo img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #photo img { object-fit: contain; }
+
+  #board {
+    display: flex; flex-direction: column; gap: calc(2 * var(--u));
+    padding: calc(3.5 * var(--u)) calc(6 * var(--u));
+    min-height: 0; min-width: 0; box-sizing: border-box;
+  }
+
+  #top { display: flex; align-items: flex-end; justify-content: space-between; }
+  #clock {
+    font-size: calc(12 * var(--u)); font-weight: 200; line-height: .9;
+    letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+  }
+  #date { font-size: calc(3.6 * var(--u)); color: var(--dim); margin-top: calc(1 * var(--u)); }
+  #now { text-align: right; }
+  #now .icon { font-size: calc(7 * var(--u)); line-height: 1; }
+  #now .temp { font-size: calc(8 * var(--u)); font-weight: 200; line-height: 1; }
+  #now .feels { font-size: calc(3 * var(--u)); color: var(--dim); }
+
+  /* Today's next 24 hours, the Weather tab's chart with every hour
+     labelled, wider than the column and scrolled sideways by a finger. */
+  #hourly {
+    display: flex; height: calc(23 * var(--u)); flex-shrink: 0; min-width: 0;
+    border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    padding: calc(.6 * var(--u)) 0;
+    overflow-x: auto; overscroll-behavior: contain; touch-action: pan-x; scrollbar-width: none;
+  }
+  #hourly::-webkit-scrollbar { display: none; }
+  #hourly:empty { display: none; }
+  #hourly .chart { flex: none; width: calc(var(--n) * 8 * var(--u)); min-height: 0; padding: 0 calc(3 * var(--u)); }
+  #hourly .bars { height: calc(3 * var(--u)); }
+  #hourly .key { display: none; }
+
+  /* Indoors, from the AirGradient: one quiet line above the clock, the
+     temperature first with a dot tinted by how stale the room is. The
+     particle counts live on the Weather tab, in a smaller line. */
+  .where-label {
+    font-size: calc(2.6 * var(--u)); font-weight: 600; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .14em;
+  }
+  .air {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    column-gap: calc(1.8 * var(--u)); row-gap: calc(.6 * var(--u));
+    font-size: calc(2.6 * var(--u)); white-space: nowrap; color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .air:empty { display: none; }
+  .air .where-label { font-size: 1em; margin-right: calc(-.6 * var(--u)); }
+  .air b { font-weight: 400; color: var(--ink); }
+  .air small { color: var(--faint); font-size: .85em; margin-left: .3em; }
+  .air .co2::before {
+    content: ""; display: inline-block; width: .6em; height: .6em; border-radius: 50%;
+    background: var(--c); margin-right: .45em; vertical-align: .05em;
+  }
+
+  /* The rest of the week scrolls under a finger; the page itself never
+     pans, so the agenda opts back in to vertical touch scrolling. */
+  #agenda {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    touch-action: pan-y; scrollbar-width: none; font-size: calc(3.4 * var(--u));
+  }
+  #agenda::-webkit-scrollbar { display: none; }
+  #agenda h2 {
+    margin: calc(2 * var(--u)) 0 calc(.8 * var(--u)); font-size: calc(2.8 * var(--u));
+    font-weight: 500; color: var(--faint); text-transform: uppercase; letter-spacing: .12em;
+  }
+  #agenda h2:first-child { margin-top: 0; }
+  .ev { display: flex; gap: calc(2 * var(--u)); align-items: baseline; padding: calc(.5 * var(--u)) 0; }
+  .ev .when {
+    flex: 0 0 calc(15 * var(--u)); color: var(--dim);
+    font-variant-numeric: tabular-nums; font-size: .9em;
+  }
+  .ev .what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev .what::before {
+    content: ""; display: inline-block; width: .5em; height: .5em; border-radius: 50%;
+    background: var(--c); margin-right: .6em; vertical-align: .12em;
+  }
+  .ev .where { color: var(--faint); font-size: .85em; }
+  .quiet { color: var(--faint); }
+
+  /* The calendar view on a landscape screen: the week as seven columns. */
+  #week { display: none; }
+  @media (orientation: landscape) {
+    body[data-view=calendar] #hourly, body[data-view=calendar] #air,
+    body[data-view=calendar] #agenda { display: none; }
+    body[data-view=calendar] #week {
+      display: grid; grid-template-columns: repeat(7, 1fr); flex: 1; min-height: 0;
+      border-top: 1px solid var(--rule);
+    }
+  }
+  #week .col { min-width: 0; overflow: hidden; padding: calc(2 * var(--u)) calc(1.4 * var(--u)); }
+  #week .col + .col { border-left: 1px solid var(--rule); }
+  #week .today { background: var(--lift); }
+  #week .head { margin-bottom: calc(2 * var(--u)); }
+  #week .name { font-size: calc(2.8 * var(--u)); color: var(--faint); text-transform: uppercase; letter-spacing: .12em; }
+  #week .num { font-size: calc(8 * var(--u)); font-weight: 200; line-height: 1.1; }
+  #week .today .num { color: var(--accent); }
+  #week .wx { font-size: calc(3 * var(--u)); color: var(--dim); }
+  #week .item {
+    background: color-mix(in srgb, var(--c) 14%, transparent); border-radius: calc(1.2 * var(--u));
+    border-left: calc(.8 * var(--u)) solid var(--c);
+    padding: calc(1 * var(--u)) calc(1.4 * var(--u)); margin-bottom: calc(1.2 * var(--u));
+    font-size: calc(3.4 * var(--u)); line-height: 1.25;
+  }
+  #week .item .t { color: var(--dim); font-size: .8em; font-variant-numeric: tabular-nums; }
+
+  /* Cameras: a tile each; tap one to have it fill the screen, rail and all. */
+  #cams {
+    grid-auto-rows: 1fr; gap: 2vmin; padding: 2.5vmin; min-height: 0; box-sizing: border-box;
+  }
+  @media (orientation: landscape) { #cams { grid-template-columns: 1fr 1fr; } }
+  #cams.one { grid-template: 1fr / 1fr; padding: 0; }
+  body.full { grid-template-columns: 1fr; }
+  body.full #rail { display: none; }
+  #cams.one .tile { border-radius: 0; border: 0; }
+  #cams.one .tile:not(.big) { display: none; }
+  .tile {
+    position: relative; overflow: hidden; border-radius: 2vmin;
+    background: var(--lift); border: 1px solid var(--rule);
+  }
+  .tile[hidden] { display: none; }
+  .tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .tile.big video { object-fit: contain; background: var(--ink); }
+  .tile .label {
+    position: absolute; left: 1.6vmin; bottom: 1.6vmin; padding: .7vmin 1.6vmin;
+    border-radius: 99px; background: rgb(237 226 207 / .85); color: var(--ink);
+    font-size: 2.2vmin; font-weight: 500;
+  }
+  .tile .pad { display: none; }
+  #cams.one .tile.turns .pad { display: block; }
+  .pad button {
+    position: absolute; width: 11vmin; height: 11vmin; border-radius: 50%;
+    border: 0; background: rgb(237 226 207 / .8); color: var(--ink);
+    display: grid; place-items: center; transition: background .15s;
+  }
+  .pad button:active, .pad button.held { background: var(--paper); }
+  .pad svg { width: 5vmin; height: 5vmin; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .pad [data-way=left] { left: 3vmin; top: calc(50% - 5.5vmin); }
+  .pad [data-way=right] { right: 3vmin; top: calc(50% - 5.5vmin); }
+  .pad [data-way=up] { top: 3vmin; left: calc(50% - 5.5vmin); }
+  .pad [data-way=down] { bottom: 3vmin; left: calc(50% - 5.5vmin); }
+  #cams .quiet { display: none; place-self: center; font-size: 3vmin; }
+  #cams.none .quiet { display: block; }
+
+  /* Weather: now and its details, the next day as a chart, the week as
+     ranges. Side by side on a landscape screen, stacked on a portrait one. */
+  #wx {
+    gap: calc(5 * var(--u)); padding: calc(5 * var(--u)) calc(6 * var(--u));
+    min-height: 0; box-sizing: border-box; flex-direction: column;
+  }
+  #wx .left { display: flex; flex-direction: column; gap: calc(4 * var(--u)); flex: 1; min-height: 0; min-width: 0; }
+  @media (orientation: landscape) {
+    #wx { flex-direction: row; }
+    #wx .left { flex: 58 1 0; }
+    #wx .week { flex: 42 1 0; }
+    #wx .head .icon { font-size: calc(10 * var(--u)); }
+    #wx .head .temp { font-size: calc(13 * var(--u)); }
+    #wx .fact { padding: calc(1.2 * var(--u)) calc(1.8 * var(--u)); }
+    #wx .fact .v { font-size: calc(4 * var(--u)); }
+    #wx .row { font-size: calc(3 * var(--u)); }
+  }
+  #wx .head { display: flex; align-items: center; gap: calc(4 * var(--u)); }
+  #wx .head .icon { font-size: calc(13 * var(--u)); line-height: 1; }
+  #wx .head .temp { font-size: calc(16 * var(--u)); font-weight: 200; line-height: .9; }
+  #wx .head .what { font-size: calc(4.4 * var(--u)); }
+  #wx .head .sub { font-size: calc(3 * var(--u)); color: var(--dim); margin-top: calc(.8 * var(--u)); }
+  #wx .facts {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: calc(1.6 * var(--u));
+  }
+  #wx .fact {
+    background: var(--lift); border: 1px solid var(--rule); border-radius: calc(1.6 * var(--u));
+    padding: calc(1.6 * var(--u)) calc(2 * var(--u));
+  }
+  #wx .fact .k { font-size: calc(2.3 * var(--u)); color: var(--faint); text-transform: uppercase; letter-spacing: .12em; }
+  #wx .fact .v { font-size: calc(5 * var(--u)); font-weight: 300; font-variant-numeric: tabular-nums; }
+  #wx .fact .n { font-size: calc(2.6 * var(--u)); color: var(--dim); }
+  /* Every indoor reading, small, closing the week. */
+  #wx .air { font-size: calc(2.3 * var(--u)); border-top: 1px solid var(--rule); padding-top: calc(1.6 * var(--u)); }
+  .chart { flex: 1; min-height: calc(30 * var(--u)); display: flex; flex-direction: column; padding: 0 calc(3 * var(--u)); }
+  /* The top margin is room for the warmest hour's label, which sits over the point. */
+  .plot { position: relative; flex: 1; min-height: 0; margin-top: calc(6 * var(--u)); }
+  .plot svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .plot .line { fill: none; stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+  .plot .area { fill: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .plot .night { fill: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .plot .t {
+    position: absolute; transform: translate(-50%, -130%); text-align: center;
+    font-size: calc(2.8 * var(--u)); font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .plot .t .i { display: block; font-size: 1.1em; }
+  .bars { display: flex; align-items: flex-end; height: calc(5 * var(--u)); gap: 2px; border-bottom: 1px solid var(--rule); }
+  .bars div { flex: 1; background: #3f6f9a; opacity: .55; border-radius: 2px 2px 0 0; }
+  .hours { position: relative; height: calc(4 * var(--u)); font-size: calc(2.5 * var(--u)); color: var(--dim); }
+  .hours span { position: absolute; top: calc(.8 * var(--u)); transform: translateX(-50%); white-space: nowrap; }
+  .key { font-size: calc(2.3 * var(--u)); color: var(--faint); margin-top: calc(.4 * var(--u)); }
+  .key b { color: #3f6f9a; font-weight: 400; }
+  /* Under the chart in portrait the week keeps its rows' height; the chart
+     takes what's left rather than squeezing the days. */
+  #wx .week { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
+  #wx .row {
+    flex: 1; display: grid; align-items: center; column-gap: calc(1.4 * var(--u));
+    grid-template-columns: 3.4em 1.4em 2.2em 2em 1fr 2em;
+    font-size: calc(3.4 * var(--u)); border-top: 1px solid var(--rule);
+    min-height: calc(8.5 * var(--u)); max-height: calc(14 * var(--u));
+  }
+  #wx .row .name { color: var(--dim); }
+  #wx .row .rain { color: #3f6f9a; font-size: .8em; text-align: right; }
+  #wx .row .lo { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+  #wx .row .hi { font-variant-numeric: tabular-nums; }
+  #wx .range { position: relative; height: calc(1.2 * var(--u)); border-radius: 99px; background: var(--rule); }
+  #wx .range div {
+    position: absolute; top: 0; bottom: 0; border-radius: 99px;
+    background: linear-gradient(90deg, #6f8fae, #c9a24a, #c4572f);
+    background-size: var(--w) 100%; background-position: var(--x) 0;
+  }
+
+  #settings { padding: 6vmin 7vmin; font-size: 2.8vmin; }
+  #settings h1 { margin: 0 0 4vmin; font-size: 5vmin; font-weight: 300; }
+  #settings .row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 1.4vmin;
+    padding: 2.4vmin 0; border-top: 1px solid var(--rule);
+  }
+  #settings .row > div { flex: 1 0 auto; color: var(--dim); }
+  #settings button {
+    font: inherit; color: var(--ink); background: var(--lift); border: 1px solid var(--rule);
+    border-radius: 1.4vmin; padding: 1.4vmin 2.4vmin; white-space: nowrap;
+  }
+  #settings button.on { background: var(--accent); border-color: var(--accent); color: #f6efe3; }
+</style>
+</head>
+<body>
+<nav id="rail">
+  <button data-view="home"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg>Today</button>
+  <button data-view="calendar"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>Calendar</button>
+  <button data-view="weather"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M9 2v1.5M3 8h1.5M4.8 3.8l1 1M13.2 3.8l-1 1"/><path d="M8 20h9a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 8 14.2 2.9 2.9 0 0 0 8 20z"/></svg>Weather</button>
+  <button data-view="photos"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M21 16l-5-5-9 8"/></svg>Photos</button>
+  <button data-view="cameras" hidden><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="2"/><path d="M16 11l5-3v8l-5-3z"/></svg>Cameras</button>
+  <button data-view="settings"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</button>
+  <div class="time"></div>
+</nav>
+<main id="main">
+<div id="photo">
+  <div class="slot"><canvas></canvas><img alt=""></div>
+  <div class="slot"><canvas></canvas><img alt=""></div>
+  <div class="slot"><canvas></canvas><img alt=""></div>
+</div>
+<div id="board">
+  <div id="air" class="air"></div>
+  <div id="top">
+    <div><div id="clock"></div><div id="date"></div></div>
+    <div id="now"></div>
+  </div>
+  <div id="hourly"></div>
+  <div id="agenda"></div>
+  <div id="week"></div>
+</div>
+<div id="wx"></div>
+<div id="cams"><div class="quiet">No cameras are on right now.</div></div>
+<div id="settings">
+  <h1>Settings</h1>
+  <div class="row"><div>Each photo</div>
+    <button data-show="15">15 s</button><button data-show="30">30 s</button>
+    <button data-show="60">1 min</button><button data-show="300">5 min</button></div>
+  <div class="row" id="turns" hidden><div>Hang</div>
+    <button data-turn="0">Landscape</button><button data-turn="90">Portrait</button>
+    <button data-turn="180">Landscape, flipped</button><button data-turn="-90">Portrait, flipped</button></div>
+  <div class="row"><div>Refresh the frame</div><button id="reload">Reload</button></div>
+</div>
+</main>
+<script>
+// How long each photo stays, how often the album and the board are read.
+// Each photo's time is a setting, kept on the frame.
+const LIST = 10 * 60e3, BOARD = 60e3;
+let SHOW = (Number(localStorage.show) || 30) * 1e3;
+const $ = id => document.getElementById(id);
+let order = [], boot = null, board = null;
+// How the frame hangs: the kiosk's start page holds this page in a frame
+// and turns it, and tells it the current turn.
+let turn = null;
+
+// WMO weather codes, as Open-Meteo reports them.
+function icon(code, day = true) {
+  if (code === 0) return day ? "☀️" : "🌙";
+  if (code <= 2) return day ? "⛅" : "☁️";
+  if (code === 3) return "☁️";
+  if (code <= 48) return "🌫️";
+  if (code <= 67 || (code >= 80 && code <= 82)) return "🌧️";
+  if (code <= 77 || code === 85 || code === 86) return "🌨️";
+  return "⛈️";
+}
+
+const deg = t => Math.round(t) + "°";
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const asDate = s => { const [y, m, d] = s.slice(0, 10).split("-").map(Number); return new Date(y, m - 1, d); };
+const weekday = (s, form = "short") => asDate(s).toLocaleDateString([], { weekday: form });
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// A steady colour per calendar, so each person's events read at a glance.
+function hue(name) {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `hsl(${h} 45% 42%)`;
+}
+
+function tick() {
+  const now = new Date();
+  $("clock").textContent = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]M$/i, "");
+  $("date").textContent = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  const [t, ap] = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).split(/\s+/);
+  const rail = document.querySelector("#rail .time");
+  rail.replaceChildren(t, el("small", null, ap || ""));
+}
+
+function drawWeather(w) {
+  const now = $("now"), hourly = $("hourly"), left = hourly.scrollLeft;
+  now.replaceChildren(); hourly.replaceChildren();
+  if (!w) return;
+  now.append(el("div", "icon", icon(w.now.code, w.now.day)), el("div", "temp", deg(w.now.temp)),
+             el("div", "feels", "feels " + deg(w.now.feels)));
+  if (!w.hours) return;
+  const hours = w.hours.slice(0, 24);
+  hourly.style.setProperty("--n", hours.length);
+  hourly.append(chart(hours, 1));
+  hourly.scrollLeft = left;
+}
+
+// WMO weather codes in words.
+function says(code) {
+  const words = { 0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Freezing fog",
+    51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
+    61: "Light rain", 63: "Rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains", 80: "Showers", 81: "Showers",
+    82: "Heavy showers", 85: "Snow showers", 86: "Snow showers", 95: "Thunderstorms", 96: "Storms with hail", 99: "Storms with hail" };
+  return words[code] ?? "";
+}
+const hhmm = s => new Date(s).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const hourName = s => new Date(s).toLocaleTimeString([], { hour: "numeric" }).replace(/\s/, "").toLowerCase();
+const compass = from => ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(from / 45) % 8];
+const uvSays = uv => uv < 3 ? "Low" : uv < 6 ? "Moderate" : uv < 8 ? "High" : uv < 11 ? "Very high" : "Extreme";
+
+function drawForecast(w, a) {
+  const box = $("wx");
+  box.replaceChildren();
+  if (!w || !w.hours) return;
+  const today = w.days[0], left = el("div", "left");
+
+  const head = el("div", "head"), words = el("div");
+  words.append(el("div", "what", says(w.now.code)),
+               el("div", "sub", "Feels " + deg(w.now.feels)), el("div", "sub", `High ${deg(today.high)} · Low ${deg(today.low)}`));
+  head.append(el("div", "icon", icon(w.now.code, w.now.day)), el("div", "temp", deg(w.now.temp)), words);
+
+  const facts = el("div", "facts");
+  const fact = (k, v, n) => {
+    const f = el("div", "fact");
+    f.append(el("div", "k", k), el("div", "v", v), el("div", "n", n));
+    facts.append(f);
+  };
+  fact("Wind", `${Math.round(w.now.wind)} mph ${compass(w.now.from)}`, `gusts ${Math.round(w.now.gust)}`);
+  fact("Humidity", Math.round(w.now.humidity) + "%", "dew point " + deg(w.now.dew));
+  fact("UV", String(Math.round(w.now.uv)), uvSays(w.now.uv) + (today.uv != null ? `, peak ${Math.round(today.uv)}` : ""));
+  fact("Rain", (today.rain ?? 0) + "%", today.fall ? `${today.fall.toFixed(2)} in today` : "none expected");
+  fact("Sunrise", hhmm(today.sunrise), "");
+  const light = (new Date(today.sunset) - new Date(today.sunrise)) / 60e3;
+  fact("Sunset", hhmm(today.sunset), `${Math.floor(light / 60)}h ${Math.round(light % 60)}m of daylight`);
+
+  left.append(head, facts, chart(w.hours));
+  const week = ranges(w.days);
+  if (a) {
+    const inside = el("div", "air");
+    airLine(inside, a, true);
+    week.append(inside);
+  }
+  box.append(left, week);
+}
+
+// The next day by the hour: temperature as a line over day and night, the
+// chance of rain as bars beneath. The line stretches to the box; labels are
+// placed over it in percentages, so nothing is measured.
+function chart(hours, every = 3) {
+  const n = hours.length, temps = hours.map(h => h.temp);
+  const lo = Math.min(...temps), hi = Math.max(...temps), span = Math.max(hi - lo, 4);
+  const x = i => i / (n - 1) * 100, y = t => 30 + (1 - (t - lo) / span) * 62;
+  const wrap = el("div", "chart"), plot = el("div", "plot");
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  const shape = (tag, attrs) => {
+    const e = document.createElementNS(ns, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    svg.append(e);
+  };
+  hours.forEach((h, i) => {
+    if (!h.day) shape("rect", { class: "night", x: Math.max(x(i - .5), 0), y: 0, width: 100 / (n - 1), height: 100 });
+  });
+  const pts = hours.map((h, i) => `${x(i).toFixed(2)},${y(h.temp).toFixed(2)}`).join(" L");
+  shape("path", { class: "area", d: `M0,100 L${pts} L100,100 Z` });
+  shape("path", { class: "line", d: `M${pts}` });
+  plot.append(svg);
+
+  const bars = el("div", "bars"), marks = el("div", "hours");
+  hours.forEach((h, i) => {
+    const b = el("div");
+    b.style.height = (h.rain ?? 0) + "%";
+    bars.append(b);
+    if (i % every) return;
+    const t = el("div", "t");
+    t.style.left = x(i) + "%";
+    t.style.top = y(h.temp) + "%";
+    t.append(el("span", "i", icon(h.code, h.day)), deg(h.temp));
+    plot.append(t);
+    const m = el("span", null, i ? hourName(h.time) : "Now");
+    m.style.left = x(i) + "%";
+    marks.append(m);
+  });
+  const key = el("div", "key");
+  key.append(el("b", null, "▮"), " chance of rain");
+  wrap.append(plot, bars, marks, key);
+  return wrap;
+}
+
+// The week: each day's low to high on one scale, so warm and cold days
+// show as where their bar sits.
+function ranges(days) {
+  const list = el("div", "week");
+  const lo = Math.min(...days.map(d => d.low)), hi = Math.max(...days.map(d => d.high));
+  const at = t => (t - lo) / Math.max(hi - lo, 1) * 100;
+  const todayName = ymd(new Date());
+  for (const d of days) {
+    const row = el("div", "row"), range = el("div", "range"), fill = el("div");
+    const from = at(d.low), width = Math.max(at(d.high) - from, 2);
+    // The gradient spans the whole week, so a day's colour says its warmth.
+    fill.style.cssText = `left:${from}%;width:${width}%;--w:${10000 / width}%;--x:${from / Math.max(100 - width, 1) * 100}%`;
+    range.append(fill);
+    row.append(el("div", "name", d.date === todayName ? "Today" : weekday(d.date)), el("div", null, icon(d.code)),
+               el("div", "rain", d.rain >= 20 ? d.rain + "%" : ""), el("div", "lo", deg(d.low)), range,
+               el("div", "hi", deg(d.high)));
+    list.append(row);
+  }
+  return list;
+}
+
+// CO₂ bands after AirGradient's own: under 800 fresh, to 1000 fine,
+// to 1500 stuffy, then open a window.
+function co2Band(ppm) {
+  if (ppm < 800) return ["Fresh air", "#4f8a4a"];
+  if (ppm < 1000) return ["Fine", "#b3912f"];
+  if (ppm < 1500) return ["Stuffy", "#c46a2c"];
+  return ["Open a window", "#b0482a"];
+}
+
+// The room's readings into box; all adds the particle counts.
+function airLine(box, a, all) {
+  const item = (value, label, cls = "") => {
+    const c = el("span", cls);
+    c.append(el("b", "", value), el("small", "", label));
+    return c;
+  };
+  const whole = n => String(Math.round(n));
+  const [band, colour] = co2Band(a.co2);
+  // The dot is the CO₂ band, leading the row as its overall verdict.
+  const temp = item(deg(a.temp), "", "co2");
+  temp.style.setProperty("--c", colour);
+  temp.title = band;
+  box.append(el("span", "where-label", "Inside"), temp,
+             item(whole(a.humidity) + "%", ""), item(whole(a.co2), "CO₂"));
+  if (a.voc != null) box.append(item(whole(a.voc), "VOC"));
+  if (a.nox != null) box.append(item(whole(a.nox), "NOx"));
+  if (all) box.append(item(whole(a.pm25), "PM2.5"), item(whole(a.pm1), "PM1"), item(whole(a.pm10), "PM10"));
+}
+
+function drawAir(a) {
+  const air = $("air");
+  air.replaceChildren();
+  if (!a) return;
+  airLine(air, a, false);
+  // One line if shrinking by a fifth at most gets it there, else two.
+  // Measured unwrapped, once.
+  air.style.fontSize = "";
+  air.style.flexWrap = "nowrap";
+  const over = air.scrollWidth / air.clientWidth;
+  air.style.flexWrap = "";
+  if (over > 1 && over <= 1.25) air.style.fontSize = parseFloat(getComputedStyle(air).fontSize) / over * 0.98 + "px";
+}
+
+// Events by day from today. A whole-day event shows on each day it covers;
+// a timed one on its start day, until it ends.
+function week(events) {
+  const now = new Date(), today = ymd(now);
+  const byDay = new Map();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+    byDay.set(ymd(d), []);
+  }
+  for (const e of events) {
+    if (e.start.length === 10) {
+      const last = e.end ? asDate(e.end) : asDate(e.start);
+      if (e.end) last.setDate(last.getDate() - 1);
+      for (const [day, list] of byDay)
+        if (day >= e.start && asDate(day) <= last) list.push({ ...e, allDay: true });
+    } else {
+      const day = e.start.slice(0, 10);
+      const ends = new Date((e.end || e.start).replace(" ", "T"));
+      if (byDay.has(day) && (day !== today || ends > now)) byDay.get(day).push(e);
+    }
+  }
+  for (const list of byDay.values())
+    list.sort((a, b) => (b.allDay ? 1 : 0) - (a.allDay ? 1 : 0) || a.start.localeCompare(b.start));
+  return byDay;
+}
+
+const clock = e => e.allDay ? "all day"
+  : new Date(e.start.replace(" ", "T")).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+function drawAgenda(events) {
+  const box = $("agenda"), top = box.scrollTop;
+  box.replaceChildren();
+  if (!events) return;
+  const now = new Date(), today = ymd(now);
+  let any = false;
+  for (const [day, list] of week(events)) {
+    if (!list.length) continue;
+    any = true;
+    const tomorrow = ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+    box.append(el("h2", null, day === today ? "Today" : day === tomorrow ? "Tomorrow"
+      : asDate(day).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })));
+    for (const e of list) {
+      const row = el("div", "ev");
+      row.style.setProperty("--c", hue(e.calendar));
+      const when = clock(e);
+      const what = el("div", "what", e.summary);
+      if (e.location) what.append(el("span", "where", " · " + e.location));
+      row.append(el("div", "when", when), what);
+      box.append(row);
+    }
+  }
+  if (!any) box.append(el("div", "quiet", "Nothing on the calendar this week."));
+  // Redrawn each minute; keep the reader's place.
+  box.scrollTop = top;
+}
+
+// The calendar view's week: a column a day, with its forecast.
+function drawWeek(events, weather) {
+  const box = $("week");
+  box.replaceChildren();
+  const wx = new Map((weather ? weather.days : []).map(d => [d.date, d]));
+  const today = ymd(new Date());
+  for (const [day, list] of week(events || [])) {
+    const col = el("div", day === today ? "col today" : "col"), head = el("div", "head");
+    head.append(el("div", "name", day === today ? "Today" : weekday(day)),
+                el("div", "num", String(asDate(day).getDate())));
+    const w = wx.get(day);
+    if (w) head.append(el("div", "wx", `${icon(w.code)} ${deg(w.high)} / ${deg(w.low)}`));
+    col.append(head);
+    for (const e of list) {
+      const item = el("div", "item");
+      item.style.setProperty("--c", hue(e.calendar));
+      item.append(el("div", "t", clock(e)), el("div", null, e.summary));
+      col.append(item);
+    }
+    box.append(col);
+  }
+}
+
+function draw() {
+  if (!board) return;
+  drawWeather(board.weather);
+  drawForecast(board.weather, board.air);
+  drawAir(board.air);
+  drawAgenda(board.events);
+  drawWeek(board.events, board.weather);
+}
+// Turning the frame changes the width the air row must fit.
+addEventListener("resize", () => board && drawAir(board.air));
+
+// One of the house's readings, or null when the house has none or it is
+// not answering, so the rest still draws.
+async function reading(path) {
+  try {
+    const r = await fetch("/api/v1/" + path, { cache: "no-store" });
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+}
+
+async function readBoard() {
+  const health = await reading("health");
+  if (!health) return;
+  // A deploy restarts the server; reload so the wall gets the new page.
+  if (boot !== null && health.boot !== boot) return location.reload();
+  boot = health.boot;
+  const [weather, air, calendar] = await Promise.all([reading("weather"), reading("air"), reading("calendar")]);
+  board = { weather, air, events: calendar && calendar.events };
+  draw();
+}
+
+function shuffle(list) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
+}
+
+async function list() {
+  try {
+    const r = await fetch("/api/v1/photos");
+    if (!r.ok) return;
+    const ids = (await r.json()).photos;
+    // A new shuffle only when the album changed, so the cycle runs through.
+    if (ids.length !== order.length || ids.some(id => !order.includes(id))) {
+      order = shuffle(ids);
+      shown = -1;
+      if (!busy && !drag) neighbours();
+    }
+  } catch {}
+}
+
+// Three slots: the previous photo off to the left, the shown one, the next
+// off to the right. Each is loaded, decoded and given its blurred fill ahead
+// of time, so a swipe or a fade only moves layers that are already drawn;
+// the frame's GPU is too slow to blur or decode while a finger moves.
+const slots = [...document.querySelectorAll("#photo .slot")].map(el =>
+  ({ el, img: el.querySelector("img"), fill: el.querySelector("canvas"), id: null, ready: null,
+     url: null, small: null, painted: "" }));
+let [prev, cur, nxt] = slots;
+let shown = -1, busy = false, drag = null;
+const at = k => order[(k % order.length + order.length) % order.length];
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+// The fill behind the photo's bars: the photo drawn tiny and blurred once,
+// then stretched, which looks the same as a large blur and costs nothing
+// to move. It draws from a small bitmap decoded off the main thread: drawing
+// the <img> itself decodes the whole photo on the main thread, about two
+// seconds a photo on the frame's CPU. A view switch that hides and shows the
+// photo leaves the canvas as it was, so it is redrawn only when its shape
+// or photo changes.
+function paint(s) {
+  const c = s.fill, b = s.small;
+  if (!b || !c.clientWidth) return;
+  const w = 40, h = Math.max(1, Math.round(w * c.clientHeight / c.clientWidth));
+  const key = `${s.id} ${w}x${h}`;
+  if (s.painted === key) return;
+  s.painted = key;
+  c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  g.filter = "blur(2px) brightness(1.1) saturate(.7)";
+  const k = Math.max(w / b.width, h / b.height) * 1.2;
+  g.drawImage(b, (w - b.width * k) / 2, (h - b.height * k) / 2, b.width * k, b.height * k);
+}
+new ResizeObserver(() => slots.forEach(paint)).observe($("photo"));
+
+function load(s, id) {
+  if (s.id !== id) {
+    s.id = id;
+    s.ready = (async () => {
+      const blob = await (await fetch("/api/v1/photos/" + id)).blob();
+      const small = await createImageBitmap(blob, { resizeWidth: 64, resizeQuality: "low" });
+      const url = URL.createObjectURL(blob);
+      if (s.id !== id) return URL.revokeObjectURL(url), small.close();
+      if (s.url) URL.revokeObjectURL(s.url);
+      s.small?.close();
+      s.url = url; s.small = small;
+      s.img.src = url;
+      await s.img.decode();
+      paint(s);
+    })().catch(() => {});
+  }
+  return s.ready;
+}
+
+function neighbours() {
+  if (!order.length) return;
+  load(prev, at(shown - 1));
+  load(nxt, at(shown + 1));
+}
+
+// Puts the three slots side by side, shifted by a finger's dx.
+function lay(dx = 0, ease = false) {
+  [prev, cur, nxt].forEach((s, k) => {
+    s.el.style.transition = ease ? "transform .3s ease-out" : "none";
+    s.el.style.transform = `translateX(calc(${(k - 1) * 100}% + ${dx}px))`;
+  });
+}
+
+// Fades the next photo in over the shown one.
+async function advance() {
+  if (!order.length || busy || drag) return;
+  busy = true;
+  const s = nxt;
+  await load(s, at(shown + 1));
+  if (s.id !== cur.id) {
+    s.el.style.cssText = "transition: none; transform: none; opacity: 0; z-index: 2";
+    void s.el.offsetWidth;
+    s.el.style.transition = "opacity 1.5s";
+    s.el.style.opacity = 1;
+    await wait(1500);
+    s.el.style.cssText = "";
+  }
+  shown++;
+  [prev, cur, nxt] = [cur, nxt, prev];
+  lay();
+  neighbours();
+  busy = false;
+}
+
+let timer;
+function restart() {
+  clearInterval(timer);
+  timer = setInterval(advance, SHOW);
+}
+
+// Dragging the photo moves it with the finger, the neighbour sliding in
+// beside it, as Frameo does. Let go past a fifth of the width, or flick, and
+// it carries on to that photo and restarts its time on screen; otherwise it
+// springs back. A second finger springs it back too.
+$("photo").addEventListener("pointerdown", e => {
+  if (drag && e.pointerId !== drag.id) return void release(null);
+  if (order.length < 2 || drag || busy || !e.isPrimary) return;
+  $("photo").setPointerCapture(e.pointerId);
+  drag = { id: e.pointerId, x: e.clientX, dx: 0, t: e.timeStamp, v: 0, raf: 0 };
+});
+$("photo").addEventListener("pointermove", e => {
+  if (!drag || drag.done || e.pointerId !== drag.id) return;
+  const dx = e.clientX - drag.x;
+  drag.v = (dx - drag.dx) / Math.max(e.timeStamp - drag.t, 1);
+  drag.dx = dx;
+  drag.t = e.timeStamp;
+  // One move per frame, however many events the screen sends.
+  if (!drag.raf) drag.raf = requestAnimationFrame(() => {
+    if (drag && !drag.done) { drag.raf = 0; lay(drag.dx); }
+  });
+});
+async function release(e) {
+  if (!drag || drag.done || (e && e.pointerId !== drag.id)) return;
+  const d = drag;
+  d.done = true;
+  cancelAnimationFrame(d.raf);
+  const side = Math.sign(d.dx), w = $("photo").clientWidth;
+  const go = e && side && (Math.abs(d.dx) > w / 5 || (Math.abs(d.dx) > 30 && Math.sign(d.v) === side && Math.abs(d.v) > .4));
+  lay(go ? side * w : 0, true);
+  await wait(300);
+  if (go) {
+    if (side < 0) { shown++; [prev, cur, nxt] = [cur, nxt, prev]; }
+    else { shown--; [prev, cur, nxt] = [nxt, prev, cur]; }
+    lay();
+    neighbours();
+    restart();
+  }
+  drag = null;
+}
+$("photo").addEventListener("pointerup", release);
+$("photo").addEventListener("pointercancel", release);
+
+// Cameras stream only while their view is open; a tile that fails hides
+// and tries again later. A <video> lets its buffer grow behind a live
+// stream, and seeking one makes it ask for the stream again from the start,
+// so a tile that falls behind plays a little fast until it is near live,
+// and starts over if it falls far behind.
+const tiles = [];
+const watching = () => document.body.dataset.view === "cameras";
+function cams() {
+  $("cams").classList.toggle("none", tiles.every(t => t.hidden));
+}
+function start(t) {
+  const v = t.querySelector("video");
+  v.src = "/api/v1/cameras/" + encodeURIComponent(t.dataset.id) + "/live.mp4?t=" + Date.now();
+  v.play().catch(() => {});
+}
+function stop(t) {
+  const v = t.querySelector("video");
+  v.removeAttribute("src");
+  v.load();
+}
+function lost(t) {
+  if (!t.querySelector("video").getAttribute("src")) return;
+  stop(t);
+  t.hidden = true;
+  t.classList.remove("big");
+  $("cams").classList.remove("one");
+  document.body.classList.remove("full");
+  cams();
+  setTimeout(() => { if (watching()) { t.hidden = false; cams(); start(t); } }, 30e3);
+}
+// Arrows that pan and tilt while held. Each move turns the camera for half a
+// second on the server, so the page repeats it until the finger lifts.
+const ARROWS = { left: "M15 5l-7 7 7 7", right: "M9 5l7 7-7 7", up: "M5 15l7-7 7 7", down: "M5 9l7 7 7-7" };
+function pad(id) {
+  const box = el("div", "pad");
+  for (const [way, d] of Object.entries(ARROWS)) {
+    const b = el("button");
+    b.dataset.way = way;
+    b.innerHTML = `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+    let every = 0;
+    const send = () => fetch(`/api/v1/cameras/${encodeURIComponent(id)}/turn/${way}`, { method: "POST" }).catch(() => {});
+    const end = () => { clearInterval(every); every = 0; b.classList.remove("held"); };
+    b.addEventListener("pointerdown", e => {
+      b.setPointerCapture(e.pointerId);
+      b.classList.add("held");
+      send();
+      clearInterval(every);
+      every = setInterval(send, 300);
+    });
+    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(t, end);
+    box.append(b);
+  }
+  return box;
+}
+async function cameraList() {
+  try {
+    const list = await (await fetch("/api/v1/cameras")).json();
+    for (const c of list) {
+      const t = el("div", c.turns ? "tile turns" : "tile"), v = el("video");
+      t.dataset.id = c.id;
+      v.muted = v.autoplay = v.playsInline = true;
+      v.addEventListener("error", () => lost(t));
+      v.addEventListener("ended", () => lost(t));
+      t.append(v, el("div", "label", c.name));
+      if (c.turns) t.append(pad(c.id));
+      t.addEventListener("click", e => {
+        if (e.target.closest(".pad button")) return;
+        const big = !$("cams").classList.contains("one");
+        t.classList.toggle("big", big);
+        $("cams").classList.toggle("one", big);
+        document.body.classList.toggle("full", big);
+      });
+      tiles.push(t);
+      $("cams").append(t);
+    }
+    document.querySelector("[data-view=cameras]").hidden = !tiles.length;
+  } catch {}
+  if (!tiles.length && watching()) view("home");
+  else if (watching()) view("cameras");
+}
+setInterval(() => {
+  if (!watching()) return;
+  for (const t of tiles) {
+    const v = t.querySelector("video"), b = v.buffered;
+    if (t.hidden || !b.length) continue;
+    const lag = b.end(b.length - 1) - v.currentTime;
+    if (lag > 10) { start(t); continue; }
+    v.playbackRate = lag > 1.5 ? 1.25 : lag < 0.7 ? 1 : v.playbackRate;
+    if (v.paused) v.play().catch(() => {});
+  }
+}, 1e3);
+
+function mark() {
+  for (const b of document.querySelectorAll("#rail [data-view]"))
+    b.classList.toggle("on", b.dataset.view === document.body.dataset.view);
+  for (const b of document.querySelectorAll("[data-show]"))
+    b.classList.toggle("on", Number(b.dataset.show) * 1e3 === SHOW);
+  for (const b of document.querySelectorAll("[data-turn]"))
+    b.classList.toggle("on", Number(b.dataset.turn) === turn);
+}
+function view(v) {
+  if (drag) release(null);
+  document.body.dataset.view = v;
+  // Settings is a visit; a reload returns to the view the house watches.
+  if (v !== "settings") localStorage.view = v;
+  mark();
+  for (const t of tiles) {
+    t.hidden = false;
+    t.classList.remove("big");
+    if (v === "cameras") start(t); else stop(t);
+  }
+  $("cams").classList.remove("one");
+  document.body.classList.remove("full");
+  cams();
+}
+$("rail").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (b) view(b.dataset.view);
+});
+$("settings").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.show) {
+    SHOW = Number(localStorage.show = b.dataset.show) * 1e3;
+    restart();
+    mark();
+  }
+  // The start page is a file on the frame, whose origin is opaque, so the
+  // message can't name it; it carries only the turn.
+  if (b.dataset.turn) parent.postMessage({ turn: Number(b.dataset.turn) }, "*");
+  if (b.id === "reload") location.reload();
+});
+
+addEventListener("message", e => {
+  if (e.source !== parent || parent === window || typeof e.data?.turn !== "number") return;
+  turn = e.data.turn;
+  $("turns").hidden = false;
+  mark();
+});
+
+document.body.dataset.view = localStorage.view || "home";
+mark();
+cameraList();
+tick();
+setInterval(tick, 1e3);
+readBoard();
+setInterval(readBoard, BOARD);
+// Redraw at each new minute too, so past events drop off and days roll over.
+setInterval(draw, 60e3);
+list().then(advance);
+setInterval(list, LIST);
+restart();
+// A daily reload lets the WebView start clean, once the server answers: a
+// reload that fails leaves the kiosk on an error page with nothing to retry.
+setTimeout(async function fresh() {
+  try {
+    if ((await fetch("/api/v1/health", { cache: "no-store" })).ok) return location.reload();
+  } catch {}
+  setTimeout(fresh, 60e3);
+}, 24 * 3600e3);
+</script>
+</body>
+</html>

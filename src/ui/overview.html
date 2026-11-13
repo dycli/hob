@@ -1,0 +1,187 @@
+<!doctype html>
+<!--
+  The house at a glance, an MCP App view (mcp.rs serves it as
+  ui://hob/overview): the weather now and today, the air indoors, the
+  calendar for today and tomorrow, a still from each camera, and any part of
+  the house that is not answering. A client of the `home` tool alone; the
+  stills load from the house's address the result names (`base`). It
+  speaks the MCP Apps postMessage protocol (2026-01-26) directly.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --ink: var(--color-text-primary, CanvasText);
+  --mid: var(--color-text-secondary, color-mix(in srgb, CanvasText 60%, Canvas));
+  --lift: var(--color-background-secondary, color-mix(in srgb, CanvasText 5%, Canvas));
+  --warn: var(--color-text-danger, #c2410c);
+  --radius: var(--border-radius-md, 10px);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: var(--ink);
+  background: transparent;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 12px; font-size: 14px; line-height: 1.35; }
+section { margin-bottom: 12px; }
+section:last-child { margin-bottom: 0; }
+h2 { font-size: 12px; font-weight: 600; color: var(--mid); margin: 0 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+.now { display: flex; align-items: baseline; gap: 10px; }
+.temp { font-size: 32px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.mid { color: var(--mid); }
+.hours { display: flex; gap: 10px; overflow-x: auto; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.hour { text-align: center; min-width: 34px; }
+.air { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+.cell { background: var(--lift); border-radius: var(--radius); padding: 6px 8px; }
+.cell b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; }
+.event { display: flex; gap: 10px; padding: 3px 0; }
+.event .when { color: var(--mid); min-width: 92px; font-variant-numeric: tabular-nums; }
+.stills { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.still { position: relative; border-radius: var(--radius); overflow: hidden; background: var(--lift); aspect-ratio: 16 / 9; }
+.still img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.still span { position: absolute; left: 6px; bottom: 4px; color: #fff; font-size: 12px; text-shadow: 0 1px 2px #000a; }
+.down { color: var(--warn); }
+</style>
+</head>
+<body>
+<div id="card"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+// The MCP Apps protocol over postMessage.
+let next = 1;
+const waiting = new Map();
+function send(msg) { window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*"); }
+function request(method, params) {
+  const id = next++;
+  send({ id, method, params });
+  return new Promise((ok, fail) => waiting.set(id, { ok, fail }));
+}
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent) return;
+  const m = event.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+  if (m.id != null && !m.method) {
+    const w = waiting.get(m.id);
+    if (!w) return;
+    waiting.delete(m.id);
+    m.error ? w.fail(new Error(m.error.message)) : w.ok(m.result);
+  } else if (m.method === "ui/notifications/tool-result") {
+    shown(m.params);
+  } else if (m.method === "ui/notifications/host-context-changed") {
+    styled(m.params);
+  } else if (m.method === "ui/resource-teardown" || m.method === "ping") {
+    send({ id: m.id, result: {} });
+  }
+});
+
+function styled(context) {
+  const vars = context && context.styles && context.styles.variables;
+  if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+  if (context && context.theme) document.documentElement.style.colorScheme = context.theme;
+}
+
+// WMO weather codes, as Open-Meteo reports them.
+function sky(code, day = true) {
+  if (code === 0) return day ? "☀️" : "🌙";
+  if (code <= 2) return day ? "⛅" : "☁️";
+  if (code === 3) return "☁️";
+  if (code <= 48) return "🌫️";
+  if (code <= 67 || (code >= 80 && code <= 82)) return "🌧️";
+  if (code <= 77 || code === 85 || code === 86) return "🌨️";
+  return "⛈️";
+}
+const deg = (n) => Math.round(n) + "°";
+const section = (title, ...kids) => { const s = el("section"); s.append(el("h2", null, title), ...kids); return s; };
+
+let state = null;
+function shown(result) {
+  const s = result && result.structuredContent;
+  if (!s || !("down" in s)) return;
+  state = s;
+  draw();
+}
+
+function draw() {
+  const s = state, parts = [];
+  const w = s.weather;
+  if (w && w.now) {
+    const now = el("div", "now");
+    now.append(el("span", "temp", sky(w.now.code, w.now.day) + " " + deg(w.now.temp)),
+      el("span", "mid", `feels ${deg(w.now.feels)}` + (w.today ? ` · ${deg(w.today.low)}–${deg(w.today.high)}` + (w.today.rain != null ? ` · ${w.today.rain}% rain` : "") : "")));
+    const hours = el("div", "hours");
+    for (const h of w.hours || []) {
+      const c = el("div", "hour");
+      c.append(el("div", "mid", h.time.slice(11, 13)), el("div", null, sky(h.code, h.day)), el("div", null, deg(h.temp)));
+      hours.append(c);
+    }
+    parts.push(section("Weather", now, hours));
+  }
+  const a = s.air;
+  if (a) {
+    const grid = el("div", "air");
+    const cell = (name, value) => { const c = el("div", "cell"); c.append(el("b", null, value), el("span", "mid", name)); grid.append(c); };
+    cell("CO₂ ppm", Math.round(a.co2));
+    cell("°F", Math.round(a.temp));
+    cell("humidity", Math.round(a.humidity) + "%");
+    cell("PM2.5", a.pm25.toFixed(1));
+    if (a.voc != null) cell("VOC index", Math.round(a.voc));
+    parts.push(section("Air indoors", grid));
+  }
+  if (Array.isArray(s.events)) {
+    const list = el("div");
+    if (!s.events.length) list.append(el("div", "mid", "Nothing today or tomorrow."));
+    for (const e of s.events) {
+      const r = el("div", "event");
+      const when = e.start.length > 10 ? e.start.slice(5) : e.start.slice(5) + " all day";
+      r.append(el("span", "when", when), el("span", null, e.summary));
+      list.append(r);
+    }
+    parts.push(section("Today and tomorrow", list));
+  }
+  if (Array.isArray(s.cameras) && s.cameras.length && s.base) {
+    const grid = el("div", "stills");
+    for (const c of s.cameras) {
+      const box = el("div", "still"), img = el("img");
+      img.alt = c.name;
+      img.src = `${s.base}/api/v1/cameras/${encodeURIComponent(c.id)}/snapshot.jpg?h=360&t=${Date.now()}`;
+      img.addEventListener("error", () => img.remove());
+      box.append(img, el("span", null, c.name));
+      grid.append(box);
+    }
+    parts.push(section("Cameras", grid));
+  }
+  if (s.down && s.down.length) {
+    const list = el("div");
+    for (const h of s.down) list.append(el("div", "down", `${h.module} is not answering`));
+    parts.push(section("Needs a look", list));
+  }
+  $("card").replaceChildren(...parts);
+}
+
+// The host sizes the frame to the card.
+function size() {
+  requestAnimationFrame(() => send({ method: "ui/notifications/size-changed", params: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight } }));
+}
+new ResizeObserver(size).observe(document.body);
+
+(async () => {
+  const init = await request("ui/initialize", {
+    appInfo: { name: "hob-overview", version: "1" },
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  }).catch(() => null);
+  styled(init && init.hostContext);
+  send({ method: "ui/notifications/initialized", params: {} });
+  // A card opened alone, with no call behind it, asks for the house itself.
+  setTimeout(async () => {
+    if (!state) shown(await request("tools/call", { name: "home", arguments: {} }).catch(() => null));
+  }, 400);
+})();
+</script>
+</body>
+</html>

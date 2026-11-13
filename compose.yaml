@@ -1,0 +1,37 @@
+# An example: hob beside the services it reads. Replace the placeholder
+# addresses, place and album with your own, and put the secrets in ./secrets.
+services:
+  hob:
+    image: ghcr.io/dycli/hob:latest
+    restart: unless-stopped
+    # MCP answers loopback only. To reach it from this host, use host
+    # networking instead of the port mapping: network_mode: host
+    ports:
+      - "8970:8970"
+    environment:
+      HOB_TZ: Europe/London
+      # Where MCP hosts reach hob; the cards load pictures from it.
+      HOB_PUBLIC: https://hob.example.net
+      HOB_WEATHER: "51.48,-0.01"
+      HOB_AIR: 192.0.2.10
+      HOB_IMMICH: http://immich:2283
+      HOB_IMMICH_KEY_FILE: /run/secrets/immich-key
+      HOB_ALBUM: Wall
+      HOB_CALDAV_FILE: /run/secrets/caldav.json
+      HOB_CAMERAS: '[{"id":"front-door","name":"Front door","turns":false},{"id":"garden","name":"Garden","turns":true}]'
+      HOB_GO2RTC: http://frigate:1984
+      HOB_FRIGATE: http://frigate:5000
+    secrets:
+      - immich-key
+      - caldav.json
+    volumes:
+      - hob-cache:/var/cache/hob
+
+secrets:
+  immich-key:
+    file: ./secrets/immich-key
+  caldav.json:
+    file: ./secrets/caldav.json
+
+volumes:
+  hob-cache:

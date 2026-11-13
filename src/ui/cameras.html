@@ -1,0 +1,267 @@
+<!doctype html>
+<!--
+  The camera card, an MCP App view (mcp.rs serves it as ui://hob/cameras).
+  A client of the house's tools and media alone: it lists through the
+  `cameras` and `camera_events` tools, turns through `camera_turn`, and
+  loads pictures, live views and clips from the house's address the
+  tool result names (`base`). It speaks the MCP Apps postMessage protocol
+  (2026-01-26) directly; the house keeps no build step for one page.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --bg: var(--color-background-primary, Canvas);
+  --lift: var(--color-background-secondary, color-mix(in srgb, CanvasText 5%, Canvas));
+  --ink: var(--color-text-primary, CanvasText);
+  --mid: var(--color-text-secondary, color-mix(in srgb, CanvasText 60%, Canvas));
+  --hair: var(--color-border-primary, color-mix(in srgb, CanvasText 14%, Canvas));
+  --alert: var(--color-text-danger, #c2410c);
+  --radius: var(--border-radius-md, 10px);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: var(--ink);
+  background: transparent;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 12px; font-size: 14px; line-height: 1.35; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.head h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+.chip { padding: 3px 10px; border: 1px solid var(--hair); border-radius: 999px; color: var(--mid); font-size: 12px; }
+.chip[aria-pressed=true] { color: var(--ink); border-color: var(--ink); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.cam { position: relative; aspect-ratio: 16 / 9; border-radius: var(--radius); overflow: hidden; background: var(--lift); }
+.cam img, .cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam .name { position: absolute; left: 8px; bottom: 6px; color: #fff; font-size: 12px; font-weight: 600; text-shadow: 0 1px 3px #000a; }
+.cam .live { position: absolute; right: 8px; top: 6px; color: #fff; font-size: 11px; letter-spacing: .04em; text-shadow: 0 1px 3px #000a; }
+.pad { position: absolute; inset: 0; pointer-events: none; }
+.pad button { position: absolute; width: 36px; height: 36px; border-radius: 50%; background: #0006; color: #fff; pointer-events: auto; display: grid; place-items: center; }
+.pad button:active { background: #000a; }
+.pad [data-way=left] { left: 6px; top: calc(50% - 18px); }
+.pad [data-way=right] { right: 6px; top: calc(50% - 18px); }
+.pad [data-way=up] { top: 6px; left: calc(50% - 18px); }
+.pad [data-way=down] { bottom: 6px; left: calc(50% - 18px); }
+.pad svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+h2 { font-size: 12px; font-weight: 600; color: var(--mid); text-transform: uppercase; letter-spacing: .05em; margin: 16px 0 6px; }
+.event { display: grid; grid-template-columns: 96px 1fr; gap: 10px; padding: 6px 0; border-top: 1px solid var(--hair); width: 100%; text-align: left; }
+.event:first-of-type { border-top: 0; }
+.event img { width: 96px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--lift); }
+.event .what { font-weight: 600; text-transform: capitalize; }
+.event .when { color: var(--mid); font-size: 12px; }
+.event.alert .what::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--alert); margin-right: 6px; vertical-align: 1px; }
+.clip { width: 100%; border-radius: var(--radius); background: #000; margin: 4px 0 8px; display: block; }
+.more { margin-top: 8px; }
+.empty, .note { color: var(--mid); padding: 8px 0; }
+</style>
+</head>
+<body>
+<div class="head">
+  <h1>Cameras</h1>
+  <button class="chip" id="alerts" aria-pressed="false">Alerts only</button>
+  <button class="chip" id="refresh">Refresh</button>
+</div>
+<div class="grid" id="grid"></div>
+<div id="timeline"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+// The MCP Apps protocol over postMessage: requests out with ids, answers
+// and the host's notifications in.
+let next = 1;
+const waiting = new Map();
+function send(msg) { window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*"); }
+function request(method, params) {
+  const id = next++;
+  send({ id, method, params });
+  return new Promise((ok, fail) => waiting.set(id, { ok, fail }));
+}
+const call = (name, args = {}) => request("tools/call", { name, arguments: args });
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent) return;
+  const m = event.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+  if (m.id != null && !m.method) {
+    const w = waiting.get(m.id);
+    if (!w) return;
+    waiting.delete(m.id);
+    m.error ? w.fail(new Error(m.error.message)) : w.ok(m.result);
+  } else if (m.method === "ui/notifications/tool-result") {
+    shown(m.params);
+  } else if (m.method === "ui/notifications/host-context-changed") {
+    styled(m.params);
+  } else if (m.method === "ui/resource-teardown") {
+    stopAll();
+    send({ id: m.id, result: {} });
+  } else if (m.method === "ping") {
+    send({ id: m.id, result: {} });
+  }
+});
+
+function styled(context) {
+  const vars = context && context.styles && context.styles.variables;
+  if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+  if (context && context.theme) document.documentElement.style.colorScheme = context.theme;
+}
+
+// What the card shows: the cameras and their events, as the tools give them.
+let state = null;
+let alertsOnly = false;
+// Rows drawn at first and per press of More, so the card stays a card.
+const ROWS = 10;
+let rows = ROWS;
+function shown(result) {
+  const s = result && result.structuredContent;
+  if (!s || !Array.isArray(s.cameras)) return;
+  state = s;
+  rows = ROWS;
+  draw();
+}
+async function load() {
+  try {
+    shown(await call("camera_events", alertsOnly ? { severity: "alert" } : {}));
+  } catch (e) {
+    $("timeline").replaceChildren(el("p", "note", "The cameras did not answer: " + e.message));
+  }
+}
+
+const media = (path) => state.base ? state.base + path : null;
+const ARROWS = { left: "M15 5l-7 7 7 7", right: "M9 5l7 7-7 7", up: "M5 15l7-7 7 7", down: "M5 9l7 7 7-7" };
+
+// Tiles show a fresh still every ten seconds; a tap plays the live view
+// in its place, a second tap goes back to the still.
+let stills = 0;
+function stopAll() {
+  clearInterval(stills);
+  for (const v of document.querySelectorAll("video")) { v.removeAttribute("src"); v.load(); }
+}
+function draw() {
+  stopAll();
+  const grid = $("grid");
+  grid.replaceChildren();
+  for (const c of state.cameras) {
+    const tile = el("div", "cam");
+    const img = el("img");
+    img.alt = c.name;
+    const still = () => { const u = media(`/api/v1/cameras/${encodeURIComponent(c.id)}/snapshot.jpg?h=360&t=${Date.now()}`); if (u) img.src = u; };
+    still();
+    tile.append(img, el("span", "name", c.name));
+    tile.addEventListener("click", (e) => {
+      if (e.target.closest(".pad")) return;
+      const playing = tile.querySelector("video");
+      if (playing) { playing.removeAttribute("src"); playing.load(); playing.remove(); tile.querySelector(".live")?.remove(); tile.querySelector(".pad")?.remove(); return; }
+      const u = media(`/api/v1/cameras/${encodeURIComponent(c.id)}/live.mp4?t=${Date.now()}`);
+      if (!u) return;
+      const v = el("video");
+      v.muted = v.autoplay = v.playsInline = true;
+      v.src = u;
+      tile.insertBefore(v, img.nextSibling);
+      tile.append(el("span", "live", "LIVE"));
+      if (c.turns) tile.append(pad(c.id));
+      v.play().catch(() => {});
+    });
+    grid.append(tile);
+    tile.still = still;
+  }
+  stills = setInterval(() => { if (!document.hidden) for (const t of grid.children) if (!t.querySelector("video")) t.still(); }, 10e3);
+  timeline();
+  size();
+}
+
+// Arrows that turn a camera while held: each call turns it half a second
+// on the server, so the card repeats it until the finger lifts.
+function pad(id) {
+  const box = el("div", "pad");
+  for (const [way, d] of Object.entries(ARROWS)) {
+    const b = el("button");
+    b.dataset.way = way;
+    b.setAttribute("aria-label", "Turn " + way);
+    b.innerHTML = `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+    let every = 0;
+    const go = () => call("camera_turn", { camera: id, direction: way }).catch(() => {});
+    const end = () => { clearInterval(every); every = 0; };
+    b.addEventListener("pointerdown", (e) => { e.stopPropagation(); b.setPointerCapture(e.pointerId); go(); clearInterval(every); every = setInterval(go, 300); });
+    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(t, end);
+    box.append(b);
+  }
+  return box;
+}
+
+function timeline() {
+  const box = $("timeline");
+  box.replaceChildren();
+  if (!state.events.length) { box.append(el("p", "empty", alertsOnly ? "No alerts in the last day." : "Nothing seen in the last day.")); return; }
+  const names = Object.fromEntries(state.cameras.map((c) => [c.id, c.name]));
+  let day = "";
+  for (const e of state.events.slice(0, rows)) {
+    const start = new Date(e.start * 1000);
+    const d = start.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+    if (d !== day) { box.append(el("h2", null, d)); day = d; }
+    const row = el("button", "event " + e.severity);
+    const thumb = el("img");
+    thumb.alt = "";
+    thumb.loading = "lazy";
+    const t = media(`/api/v1/events/${encodeURIComponent(e.id)}/thumbnail.webp`);
+    if (t) thumb.src = t;
+    const words = el("div");
+    const lasted = e.end ? `${Math.max(1, Math.round(e.end - e.start))} s` : "now";
+    words.append(
+      el("div", "what", e.objects.join(", ") || e.severity),
+      el("div", "when", `${start.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} · ${names[e.camera] || e.camera} · ${lasted}`),
+    );
+    row.append(thumb, words);
+    row.addEventListener("click", () => {
+      // Activity still going on has no recording yet; its camera's live view does.
+      if (!e.end) { const tile = [...$("grid").children][state.cameras.findIndex((c) => c.id === e.camera)]; if (tile && !tile.querySelector("video")) tile.click(); tile?.scrollIntoView({ block: "nearest" }); return; }
+      const open = row.nextElementSibling;
+      if (open && open.classList.contains("clip")) { open.removeAttribute("src"); open.load(); open.remove(); size(); return; }
+      const u = media(`/api/v1/events/${encodeURIComponent(e.id)}/clip.mp4`);
+      if (!u) return;
+      const v = el("video", "clip");
+      v.controls = v.autoplay = v.playsInline = v.muted = true;
+      v.src = u;
+      v.addEventListener("loadedmetadata", size);
+      row.after(v);
+      size();
+    });
+    box.append(row);
+  }
+  if (state.events.length > rows) {
+    const more = el("button", "chip more", `More (${state.events.length - rows})`);
+    more.addEventListener("click", () => { rows += ROWS * 2; timeline(); size(); });
+    box.append(more);
+  }
+}
+
+// The host sizes the frame to the card.
+function size() {
+  requestAnimationFrame(() => send({ method: "ui/notifications/size-changed", params: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight } }));
+}
+new ResizeObserver(size).observe(document.body);
+
+$("refresh").addEventListener("click", load);
+$("alerts").addEventListener("click", () => {
+  alertsOnly = !alertsOnly;
+  $("alerts").setAttribute("aria-pressed", String(alertsOnly));
+  load();
+});
+
+(async () => {
+  const init = await request("ui/initialize", {
+    appInfo: { name: "hob-cameras", version: "1" },
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  }).catch(() => null);
+  styled(init && init.hostContext);
+  send({ method: "ui/notifications/initialized", params: {} });
+  // The call's own result draws the card; a card opened alone, with no
+  // call behind it, asks for the cameras itself.
+  setTimeout(() => { if (!state) load(); }, 400);
+})();
+</script>
+</body>
+</html>
