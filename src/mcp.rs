@@ -104,6 +104,13 @@ fn card(uri: &str) -> Value {
     json!({ "ui": { "resourceUri": uri } })
 }
 
+/// The card of a tool whose card is the point of calling it, so a host
+/// shows it with each call: `is.libri/opens`, which Libri reads (MCP Apps
+/// has no field for it). A lookup's card (`card`) waits to be asked for.
+fn shown_card(uri: &str) -> Value {
+    json!({ "ui": { "resourceUri": uri }, "is.libri/opens": true })
+}
+
 /// The tools of the modules this house has.
 fn tools(app: &App) -> Vec<Value> {
     let mut t = vec![json!({
@@ -112,7 +119,7 @@ fn tools(app: &App) -> Vec<Value> {
         "description": "The house at a glance: the weather now and today, the air indoors, the calendar for today and tomorrow, the cameras, and any part of the house's backend that is not answering. Shown as a card.",
         "inputSchema": { "type": "object", "properties": {} },
         "annotations": { "readOnlyHint": true },
-        "_meta": card(OVERVIEW),
+        "_meta": shown_card(OVERVIEW),
     })];
     if app.weather.is_some() {
         t.push(json!({
@@ -150,7 +157,7 @@ fn tools(app: &App) -> Vec<Value> {
                 "description": "The house's cameras and what they saw in the last day, shown as a card with live views and the timeline.",
                 "inputSchema": { "type": "object", "properties": {} },
                 "annotations": { "readOnlyHint": true },
-                "_meta": card(CAMERAS),
+                "_meta": shown_card(CAMERAS),
             }),
             json!({
                 "name": "camera_events",

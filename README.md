@@ -83,7 +83,10 @@ through it, and hold no logic of their own.
 **MCP.** Streamable HTTP at `/mcp`, stateless JSON-RPC. Two tools carry
 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) cards (the
 `io.modelcontextprotocol/ui` extension): the cameras with live views and the
-timeline, and an overview of the house. The endpoint answers loopback only
+timeline, and an overview of the house. Both are the point of their call,
+so they set `"is.libri/opens": true` in `_meta`, which tells a host that
+reads it to show the card with each call; `camera_events` carries the
+cameras card too, shown only on asking. The endpoint answers loopback only
 and refuses browsers, so put it behind a proxy on the same host to reach it
 from elsewhere.
 
